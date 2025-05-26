@@ -10,70 +10,67 @@ async function createOrder(req, res) {
   const userId = req.user.userId; // userId dari JWT token
 
   try {
-    // Menghitung total harga berdasarkan cartId
-    const totalPrice = await calculateTotalPrice(cartId);
+    // Ambil data cart berdasarkan cartId dan userId
+    const cartData = await orderModel.getCart(cartId, userId);
+    console.log("cartData:", cartData);
 
-    // Membuat order di Firestore
+    // Hitung total harga berdasarkan items dalam cart
+    const totalPrice = await calculateTotalPrice(cartData);
+
+    // Data order yang akan disimpan
     const orderData = {
-      userId,
-      cartId,
-      status: "pending", // Status awal adalah pending
+      ...cartData,
       totalPrice,
       shippingAddress,
-      paymentStatus: paymentStatus || "pending", // Status pembayaran default adalah 'pending'
+      paymentStatus: paymentStatus || "pending",
+      OrderStatus: "pending", // Status awal pesanan
       orderDate: new Date(),
     };
 
-    const orderId = await orderModel.createOrder(orderData); // Menyimpan pesanan ke Firestore
+    // Simpan order di Firestore
+    const orderId = await orderModel.createOrder(orderData, userId);
 
-    // Mengurangi stok produk berdasarkan item yang dipesan
-    const cartData = await orderModel.getCart(cartId); // Ambil data cart untuk mendapatkan item
-    for (let item of cartData.items) {
-      const { id: productId, quantity } = item;
+    // Kurangi stok produk per item dalam cart
+    const { id: productId, quantity } = cartData;
 
-      try {
-        // Panggil Product Service untuk mengurangi stok produk
-        const response = await axios.put(
-          `${PRODUCT_SERVICE_URL}`,
-          { productId, quantity },
-          {
-            headers: {
-              Authorization: `Bearer ${
-                req.headers["authorization"]?.split(" ")[1]
-              }`,
-            },
-          }
-        );
-
-        if (response.status !== 200) {
-          return res
-            .status(400)
-            .json({
-              message: `Failed to update stock for product ${productId}`,
-            });
+    try {
+      const response = await axios.put(
+        `${PRODUCT_SERVICE_URL}`, // Pastikan endpoint benar
+        { productId, quantity },
+        {
+          headers: {
+            Authorization: `Bearer ${
+              req.headers["authorization"]?.split(" ")[1]
+            }`,
+          },
         }
-      } catch (error) {
-        console.error(
-          "Stock update error:",
-          error.response?.data || error.message
-        );
+      );
+
+      if (response.status !== 200) {
         return res.status(400).json({
-          message: `Not enough stock available for product ${productId}. Please reduce the quantity or try later.`,
-          details: error.response?.data || error.message,
+          message: `Failed to update stock for product ${productId}`,
         });
       }
+    } catch (error) {
+      console.error(
+        "Stock update error:",
+        error.response?.data || error.message
+      );
+      return res.status(400).json({
+        message: `Not enough stock available for product ${productId}. Please reduce the quantity or try later.`,
+        details: error.response?.data || error.message,
+      });
     }
 
-    // Menghapus cart setelah pesanan berhasil dibuat
-    const deleteCartResult = await orderModel.deleteCart(cartId);
-
+    // Hapus cart setelah order berhasil dibuat
+    const deleteCartResult = await orderModel.deleteCart(cartId, userId);
     if (!deleteCartResult) {
       return res
         .status(500)
         .json({ message: "Failed to delete cart after order" });
     }
 
-    // Mengembalikan response dengan informasi order
+    // Respon sukses dengan info order
     res.status(201).json({
       message: "Order created successfully",
       orderId,
